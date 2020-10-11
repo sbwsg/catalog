@@ -1,0 +1,101 @@
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: git-cli
+  labels:
+    app.kubernetes.io/version: "0.2"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.17.0"
+    tekton.dev/tags: git
+    tekton.dev/displayName: "git cli"
+spec:
+  description: >-
+    This task can be used to perform git operations.
+
+    Git command that needs to be run can be passed as a script to
+    the task.This task needs authentication to git in order to push
+    after the git operation.
+
+  workspaces:
+    - name: ssh-directory
+      description: |
+        An optional workspace to supply your own .ssh directory. Allows you
+        to provide a private key and known_hosts file. Both files should be at
+        the root of the workspace. Since private key files will commonly have
+        different names you can supply the path to the private key with the
+        SSH_KEY_PATH param.
+
+      mountPath: /ssh-directory
+    - name: source
+      description: A workspace that contains the fetched git repository.
+    - name: input
+      description: A workspace that contains file that needs to be added to git.
+  params:
+    - name: BASE_IMAGE
+      description: |
+        The base image for the task.
+      type: string
+      default: alpine/git:latest
+
+    - name: GIT_USER_NAME
+      type: string
+      description: |
+        Git user name for performing git operation.
+      default: ""
+
+    - name: GIT_USER_EMAIL
+      type: string
+      description: |
+        Git user email for performing git operation.
+      default: ""
+
+    - name: GIT_SCRIPT
+      description: The git script to run.
+      type: string
+      default: |
+        git help
+
+    - name: SSH_KEY_PATH
+      description: The path to the private key on provided ssh-directory workspace.
+      type: string
+      default: id_rsa
+
+  results:
+    - name: commit
+      description: The precise commit SHA after the git operation.
+
+  steps:
+    - name: git
+      image: $(params.BASE_IMAGE)
+      workingDir: $(workspaces.source.path)
+      script: |
+        if [ "$(workspaces.ssh-directory.bound)" == "true" ]
+        then
+          _SSH="ssh"
+
+          KEY_PATH="$(workspaces.ssh-directory.path)/$(params.SSH_KEY_PATH)"
+          [ -f "$KEY_PATH" ]        && _SSH="$_SSH -i \"$KEY_PATH\""
+
+          KNOWNHOSTS_PATH="$(workspaces.ssh-directory.path)/known_hosts"
+          [ -f "$KNOWNHOSTS_PATH" ] && _SSH="$_SSH -o UserKnownHostsFile=\"$KNOWNHOSTS_PATH\""
+
+          # GIT_SSH_COMMAND env var described here:
+          # https://git-scm.com/docs/git#Documentation/git.txt-codeGITSSHCOMMANDcode
+          export GIT_SSH_COMMAND="$_SSH"
+        fi
+
+        # Setting up the config for the git.
+        git config --global user.email "$(params.GIT_USER_EMAIL)"
+        git config --global user.name "$(params.GIT_USER_NAME)"
+
+        $(params.GIT_SCRIPT)
+
+        RESULT_SHA="$(git rev-parse HEAD | tr -d '\n')"
+        EXIT_CODE="$?"
+        if [ "$EXIT_CODE" != 0 ]
+        then
+          exit $EXIT_CODE
+        fi
+        # Make sure we don't add a trailing newline to the result!
+        echo -n "$RESULT_SHA" > $(results.commit.path)
